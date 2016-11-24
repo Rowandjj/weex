@@ -167,6 +167,7 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
+import android.telephony.TelephonyManager;
 
 import com.taobao.weex.utils.WXLogUtils;
 
@@ -176,58 +177,152 @@ import java.util.List;
 /**
  * Description:
  *
- * Created by rowandjj(chuyi)<br/> Date: 2016/11/16<br/> Time: 上午11:48<br/>
+ * todo 需要适配android m权限
+ *
+ * Created by rowandjj(chuyi)
  */
 
-final class DefaultWXConnection implements IWXConnection {
+public final class DefaultWXConnection implements IWXConnection {
 
+    static final String TAG = "WXConnectionModule";
+
+    private Context mContext;
     private ConnectivityManager mConnectivityManager;
     private ConnectivityReceiver mConnectivityReceiver;
-
     private List<OnNetworkChangeListener> mListeners;
-    private Context mContext;
-
-    private static final String TAG = "DefaultWXConnection";
-
     private boolean hasRegisteredReceiver = false;
 
     private String mCurConnectedType = "";
 
     DefaultWXConnection(@NonNull Context context) {
         mContext = context.getApplicationContext();
-
         mConnectivityManager = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         mConnectivityReceiver = new ConnectivityReceiver();
     }
 
+    /**
+     * ACCESS_NETWORK_STATE
+     * 返回值是'bluetooth'、'cellular'、'ethernet'、'none'、'wifi'、'wimax'、'mixed'、'other' 或'unknown'
+     */
     @Override
+    @NonNull
+    @Type
     public String getType() {
-        return null;
+        try {
+            NetworkInfo networkInfo = mConnectivityManager.getActiveNetworkInfo();
+            if (networkInfo == null || !networkInfo.isConnected() || !networkInfo.isAvailable()) {
+                return IWXConnection.TYPE_NONE;
+            }
+
+            //todo type_mix??
+
+            int type = networkInfo.getType();
+            if (!ConnectivityManager.isNetworkTypeValid(type)) {
+                return IWXConnection.TYPE_UNKNOWN;
+            }
+            if (type == ConnectivityManager.TYPE_WIFI) {
+                return IWXConnection.TYPE_WIFI;
+            } else if (type == ConnectivityManager.TYPE_BLUETOOTH) {
+                return IWXConnection.TYPE_BLUETOOTH;
+            } else if (type == ConnectivityManager.TYPE_WIMAX) {
+                return IWXConnection.TYPE_WIMAX;
+            } else if (type == ConnectivityManager.TYPE_ETHERNET) {
+                return IWXConnection.TYPE_ETHERNET;
+            } else if (type == ConnectivityManager.TYPE_MOBILE) {
+                return IWXConnection.TYPE_CELLULAR;
+            } else {
+                return IWXConnection.TYPE_OTHER;
+            }
+        } catch (SecurityException e) {
+            WXLogUtils.e(TAG, e.getMessage());
+        }
+        return IWXConnection.TYPE_UNKNOWN;
     }
 
     @Override
-    public @NonNull String getNetworkType() {
+    @NonNull
+    @Type
+    public String getNetworkType() {
         try {
             NetworkInfo networkInfo = mConnectivityManager.getActiveNetworkInfo();
-            if (networkInfo == null || !networkInfo.isConnected()) {
-                return TYPE_NONE;
-            } else if (ConnectivityManager.isNetworkTypeValid(networkInfo.getType())) {
-                //todo 映射到我们定义的类型
-                return networkInfo.getTypeName().toUpperCase();
-            } else {
-                return TYPE_UNKNOWN;
+            if (networkInfo == null || !networkInfo.isConnected() || !networkInfo.isAvailable()) {
+                return IWXConnection.TYPE_NONE;
             }
-        } catch (Exception e) {
-            //todo no permission
 
-            return TYPE_UNKNOWN;
+            int type = networkInfo.getType();
+            if (!ConnectivityManager.isNetworkTypeValid(type)) {
+                return IWXConnection.TYPE_UNKNOWN;
+            }
+
+            if (type == ConnectivityManager.TYPE_WIFI) {
+                return IWXConnection.TYPE_WIFI;
+            }
+
+            //TelephonyManager#getNetworkClass
+            switch (networkInfo.getSubtype()) {
+                case TelephonyManager.NETWORK_TYPE_GPRS:
+                case TelephonyManager.NETWORK_TYPE_EDGE:
+                case TelephonyManager.NETWORK_TYPE_CDMA:
+                case TelephonyManager.NETWORK_TYPE_1xRTT:
+                case TelephonyManager.NETWORK_TYPE_IDEN:
+                    return IWXConnection.TYPE_MOBILE_2G;
+                case TelephonyManager.NETWORK_TYPE_UMTS:
+                case TelephonyManager.NETWORK_TYPE_EVDO_0:
+                case TelephonyManager.NETWORK_TYPE_EVDO_A:
+                case TelephonyManager.NETWORK_TYPE_HSDPA:
+                case TelephonyManager.NETWORK_TYPE_HSUPA:
+                case TelephonyManager.NETWORK_TYPE_HSPA:
+                case TelephonyManager.NETWORK_TYPE_EVDO_B:
+                case TelephonyManager.NETWORK_TYPE_EHRPD:
+                case TelephonyManager.NETWORK_TYPE_HSPAP:
+                    return IWXConnection.TYPE_MOBILE_3G;
+                case TelephonyManager.NETWORK_TYPE_LTE:
+                    return IWXConnection.TYPE_MOBILE_4G;
+                default:
+                    return IWXConnection.TYPE_OTHER;
+            }
+
+        } catch (SecurityException e) {
+            WXLogUtils.e(TAG, e.getMessage());
         }
+        return IWXConnection.TYPE_UNKNOWN;
     }
 
     @Override
     public double getDownlinkMax() {
-        //todo
-        return -1;
+        String type = getType();
+        switch (type) {
+            case IWXConnection.TYPE_WIFI:
+                return 7000.0;//802.11ad
+            case IWXConnection.TYPE_BLUETOOTH:
+                return 24.0;//3.0 + High Speed (HS)
+            case IWXConnection.TYPE_WIMAX:
+                return 365.0;//WiMAX 2
+            case IWXConnection.TYPE_ETHERNET:
+                return 10000.0;//10-gigabit Ethernet
+            case IWXConnection.TYPE_MIXED:
+                return 0;//todo?
+            case IWXConnection.TYPE_NONE:
+                return 0;
+            case IWXConnection.TYPE_OTHER:
+                return 0;//todo
+            case IWXConnection.TYPE_UNKNOWN:
+                //+Infinity
+                return Double.MAX_VALUE;//todo 需要测试一下
+            case IWXConnection.TYPE_CELLULAR:
+                String networkType = getNetworkType();
+                if(IWXConnection.TYPE_MOBILE_2G.equals(networkType)) {
+                    return 0.384;//EDGE 2.75G
+                } else if(IWXConnection.TYPE_MOBILE_3G.equals(networkType)){
+                    return 42;//HSPAP 3.9G
+                } else if(IWXConnection.TYPE_MOBILE_4G.equals(networkType)) {
+                    return 100;//LTE Advanced 4G
+                } else {
+                    return 0;//todo
+                }
+            default:
+                return 0;
+        }
     }
 
     @Override
@@ -235,12 +330,13 @@ final class DefaultWXConnection implements IWXConnection {
         if (listener == null) {
             return;
         }
+
         if (mListeners == null) {
             mListeners = new ArrayList<>();
         }
-        mListeners.add(listener);
 
-        if(!hasRegisteredReceiver){
+        mListeners.add(listener);
+        if (!hasRegisteredReceiver) {
             hasRegisteredReceiver = true;
             registerReceiver();
         }
@@ -249,7 +345,38 @@ final class DefaultWXConnection implements IWXConnection {
     @Override
     public void destroy() {
         unregisterReceiver();
+        if (mListeners != null) {
+            mListeners.clear();
+            mListeners = null;
+        }
         hasRegisteredReceiver = false;
+    }
+
+    private void notifyOnNetworkChange() {
+        if (mListeners == null || mListeners.isEmpty()) {
+            return;
+        }
+        String newType = getType();
+        if(newType.equals(IWXConnection.TYPE_CELLULAR)) {
+            newType = getNetworkType();
+        }
+        if (!newType.equalsIgnoreCase(mCurConnectedType)) {
+            mCurConnectedType = newType;
+            WXLogUtils.d(TAG,"network type changed to "+mCurConnectedType);
+            for (OnNetworkChangeListener listener : mListeners) {
+                listener.onNetworkChange();
+            }
+        }
+    }
+
+    private void registerReceiver() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
+        mContext.registerReceiver(mConnectivityReceiver, filter);
+    }
+
+    private void unregisterReceiver() {
+        mContext.unregisterReceiver(mConnectivityReceiver);
     }
 
     private class ConnectivityReceiver extends BroadcastReceiver {
@@ -264,29 +391,5 @@ final class DefaultWXConnection implements IWXConnection {
                 }
             }
         }
-    }
-
-    private void notifyOnNetworkChange() {
-        if (mListeners == null || mListeners.isEmpty()) {
-            return;
-        }
-        String newType = getNetworkType();//todo networktype or netType ?
-        double downlinkMax = getDownlinkMax();
-        if (!newType.equalsIgnoreCase(mCurConnectedType)) {
-            mCurConnectedType = newType;
-            for (OnNetworkChangeListener listener : mListeners) {
-                listener.onNetworkChange(newType,downlinkMax);
-            }
-        }
-    }
-
-    private void registerReceiver() {
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
-        mContext.registerReceiver(mConnectivityReceiver, filter);
-    }
-
-    private void unregisterReceiver() {
-        mContext.unregisterReceiver(mConnectivityReceiver);
     }
 }
